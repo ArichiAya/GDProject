@@ -1,38 +1,28 @@
 import pandas as pd
+import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split, cross_validate, KFold
+from sklearn.model_selection import train_test_split, cross_validate, KFold, GridSearchCV
 from sklearn.metrics import classification_report
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# 1. 快速加载清洗后的数据
-print("正在从 Parquet 加载预处理数据...")
+# 1. 快速加载数据
+print("正在加载数据...")
 df = pd.read_parquet("processed_data.parquet")
 
-# 2. 样本均衡处理
-# 分别提取恶意和正常样本
+# 2. 样本均衡处理 (下采样)
 mal_df = df[df['Label'] == 1]
 ben_df = df[df['Label'] == 0]
+sample_size = min(len(mal_df), len(ben_df))
 
-mal_count = len(mal_df)
-ben_count = len(ben_df)
-
-print(f"原始数据统计：恶意样本 {mal_count} 条，正常样本 {ben_count} 条")
-
-if ben_count > mal_count:
-    # 如果正常包多，则把正常包减少到和恶意包一样多
-    print("采取下采样：缩减正常样本数量...")
-    ben_df = ben_df.sample(n=mal_count, random_state=42)
-elif mal_count > ben_count:
-    # 如果恶意包反而多，则把恶意包减少到和正常包一样多
-    print("采取下采样：缩减恶意样本数量...")
-    mal_df = mal_df.sample(n=ben_count, random_state=42)
-
-# 合并结果
-df_balanced = pd.concat([ben_df, mal_df])
+print(f"均衡前：恶意 {len(mal_df)}，正常 {len(ben_df)}")
+df_balanced = pd.concat([
+    mal_df.sample(n=sample_size, random_state=42),
+    ben_df.sample(n=sample_size, random_state=42)
+]).sample(frac=1, random_state=42)  # 合并后再次打乱
 print(f"均衡后总样本数: {len(df_balanced)}")
 
-# 3. 划分特征与标签
+# 3. 特征工程
 X = df_balanced.drop(columns=['Label'])
 keep_features = [
     'Flow Duration', 'Total Fwd Packet', 'Total Length of Fwd Packet',
@@ -49,132 +39,105 @@ keep_features = [
     'Subflow Fwd Bytes', 'FWD Init Win Bytes', 'Bwd Init Win Bytes',
     'Fwd Seg Size Min'
 ]
-X_filtered = X[keep_features]
+
+# 【修正】使用 .copy() 避免 SettingWithCopyWarning
+X_filtered = X[keep_features].copy()
+
+# 【第一步：特征增强】
+X_filtered['Flow_Density'] = X_filtered['Total Length of Fwd Packet'] / (
+    X_filtered['Flow Duration'] + 1e-5)
+X_filtered['Packet_Size_Stability'] = X_filtered['Packet Length Std'] / (
+    X_filtered['Packet Length Mean'] + 1e-5)
+
+print(f"特征工程完成，当前特征总数: {X_filtered.shape[1]}")
+
 y = df_balanced['Label']
 X_train, X_test, y_train, y_test = train_test_split(X_filtered,
                                                     y,
                                                     test_size=0.2,
                                                     random_state=42)
 
-# X 通常是去掉了 'Label' 列后的 DataFrame
-print(f"特征总数: {X_filtered.shape[1]}")
-print("特征列表清单：")
-print(X_filtered.columns.tolist())
+# 4. 【第二步：自动化调优】
+print(f"启动 GridSearch 调优 (训练集规模: {X_train.shape})...")
+rf_base = RandomForestClassifier(random_state=42, n_jobs=-1)
 
-# 4. 训练随机森林
-print(f"启动随机森林训练 (训练集规模: {X_train.shape})...")
-rf = RandomForestClassifier(n_estimators=100,
-                            n_jobs=-1,
-                            random_state=42,
-                            max_depth=None)
-rf.fit(X_train, y_train)
+param_grid = {
+    'n_estimators': [100, 200],  # 缩减了一下范围以加快速度，可自行加回 300
+    'max_depth': [15, 25, None],
+    'min_samples_split': [2, 5],
+    'max_features': ['sqrt']
+}
+
+grid_search = GridSearchCV(estimator=rf_base,
+                           param_grid=param_grid,
+                           cv=3,
+                           scoring='f1',
+                           verbose=2)
+grid_search.fit(X_train, y_train)
+
+print("\n" + "=" * 30)
+print(f"最佳参数: {grid_search.best_params_}")
+print(f"最佳 F1 分数: {grid_search.best_score_:.4f}")
+print("=" * 30)
+
+# 获取最优模型
+best_rf = grid_search.best_estimator_
 
 # 5. 评估结果
-y_pred = rf.predict(X_test)
-print("\n--- 训练评估报告 ---")
+y_pred = best_rf.predict(X_test)
+print("\n--- 最终模型测试集评估报告 ---")
 print(classification_report(y_test, y_pred))
 
-# 6. 交叉验证 (核心补充)
-print("\n正在启动交叉验证 (这可能需要一些时间)...")
-
-# 定义 kf：将数据随机打乱(shuffle)，并切分成 5 份
+# 6. 5折交叉验证 (使用最优模型评估全局稳定性)
+print("\n正在启动 5-Fold 交叉验证...")
 kf = KFold(n_splits=5, shuffle=True, random_state=42)
-
 scoring_metrics = ['accuracy', 'precision', 'recall', 'f1']
-results = cross_validate(rf, X_filtered, y, cv=kf, scoring=scoring_metrics)
+cv_results = cross_validate(best_rf,
+                            X_filtered,
+                            y,
+                            cv=kf,
+                            scoring=scoring_metrics)
 
-print("\n--- 5折交叉验证综合评估 ---")
-print(f"平均准确率 (Accuracy):  {results['test_accuracy'].mean():.4f}")
-print(f"平均精确率 (Precision): {results['test_precision'].mean():.4f}")
-print(f"平均召回率 (Recall):    {results['test_recall'].mean():.4f}")
-print(f"平均 F1 分数:          {results['test_f1'].mean():.4f}")
+print(f"平均准确率: {cv_results['test_accuracy'].mean():.4f}")
+print(f"平均召回率: {cv_results['test_recall'].mean():.4f}")
 
 
-def plot_combined_results(results, importances):
-    # 1. 准备交叉验证数据
-    plot_data = pd.DataFrame({
+# 7. 可视化与特征重要性分析
+def plot_results(results, model, features):
+    importances = pd.Series(
+        model.feature_importances_,
+        index=features.columns).sort_values(ascending=False)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
+
+    # A. 交叉验证结果
+    cv_df = pd.DataFrame({
         'Accuracy': results['test_accuracy'],
         'Precision': results['test_precision'],
         'Recall': results['test_recall'],
         'F1-Score': results['test_f1']
     })
+    sns.boxplot(data=cv_df, palette="Set3", ax=ax1)
+    ax1.set_title('A. Cross-Validation Reliability')
 
-    # 2. 创建画布：1行2列
-    # figsize(宽, 高) 可以根据需要调整
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
-    sns.set(style="whitegrid")
-
-    # --- 左图：交叉验证箱线图 ---
-    sns.boxplot(data=plot_data, palette="Set3", width=0.5, ax=ax1)
-    sns.stripplot(data=plot_data, color=".25", size=6, jitter=True, ax=ax1)
-    ax1.set_title('A. 5-Fold Cross Validation Metrics', fontsize=16, pad=15)
-    ax1.set_ylabel('Score', fontsize=13)
-    ax1.set_ylim(0, 1.05)
-
-    # --- 右图：特征重要性条形图 ---
-    top_10_features = importances.head(10)
-    sns.barplot(x=top_10_features.values,
-                y=top_10_features.index,
+    # B. Top 10 特征
+    sns.barplot(x=importances.head(10).values,
+                y=importances.head(10).index,
                 palette="viridis",
                 ax=ax2)
-    ax2.set_title('B. Top 10 Important Features', fontsize=16, pad=15)
-    ax2.set_xlabel('Importance Score', fontsize=13)
-    ax2.set_ylabel('Features', fontsize=13)
+    ax2.set_title('B. Top 10 Important Features')
 
-    # 3. 自动调整布局，防止标签重叠
     plt.tight_layout()
-
-    # 4. 保存为高清图片
-    plt.savefig('model_evaluation_combined.png', dpi=300, bbox_inches='tight')
-    print("--- 拼图已保存为 model_evaluation_combined.png ---")
-
-    # 5. 显示
+    plt.savefig('evaluation_report.png', dpi=300)
     plt.show()
 
+    # 打印全量特征重要性排名
+    print("\n--- 全量特征重要性排名 ---")
+    fi_df = pd.DataFrame({
+        'Feature': importances.index,
+        'Importance': importances.values
+    })
+    print(fi_df)
 
-importances = pd.Series(rf.feature_importances_,
-                        index=X_filtered.columns).sort_values(ascending=False)
-plot_combined_results(results, importances)
 
-# 1. 找出贡献度小于 0.01 的特征名
-# importances = pd.Series(rf.feature_importances_, index=X_filtered.columns)
-# low_importance_features = importances[importances < 0.01]
-# print(f"贡献度极低的特征数量: {len(low_importance_features)}")
-# print(low_importance_features.index.tolist())
-
-# 2. 找出贡献度大于 0.01 (或更高) 的特征名
-# keep_features = importances[importances >= 0.01].index.tolist()
-
-# print(f"保留的高权重特征数量: {len(keep_features)}")
-# print(keep_features)
-
-# 1. 提取特征重要性并匹配特征名
-# 确保 rf 是你训练好的随机森林对象，X_filtered 是你筛选后的特征矩阵
-importances = rf.feature_importances_
-feature_names = X_filtered.columns
-
-# 2. 创建一个 DataFrame 方便排序和展示
-feature_importance_df = pd.DataFrame({
-    'Feature': feature_names,
-    'Importance': importances
-}).sort_values(by='Importance', ascending=False)
-
-# 3. 打印出所有特征的重要性数值（控制台查看）
-print("\n--- 所有特征重要性排序 ---")
-pd.set_option('display.max_rows', None)  # 确保显示所有行
-print(feature_importance_df)
-
-# 4. 可视化展示（条形图）
-plt.figure(figsize=(10, 12))  # 因为有45个特征，高度设长一点
-sns.barplot(x='Importance',
-            y='Feature',
-            data=feature_importance_df,
-            palette='viridis')
-plt.title('Feature Importance Ranking (All 45 Features)')
-plt.xlabel('Importance Score')
-plt.ylabel('Features')
-plt.tight_layout()
-
-# 保存图片
-plt.savefig('all_features_importance.png')
-plt.show()
+plot_results(cv_results, best_rf, X_filtered)
