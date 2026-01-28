@@ -1,0 +1,5 @@
+#忽略资源文件夹
+src/
+resources/
+
+*.joblib
