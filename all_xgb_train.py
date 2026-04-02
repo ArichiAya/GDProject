@@ -8,6 +8,7 @@ from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split, KFold, GridSearchCV, cross_validate
 from sklearn.feature_selection import RFECV
 from sklearn.metrics import classification_report
+import joblib
 
 
 # ==========================================
@@ -62,7 +63,7 @@ if __name__ == "__main__":
         mal_df.sample(n=sample_size, random_state=42),
         ben_df.sample(n=sample_size, random_state=42)
     ]).sample(frac=1, random_state=42)
-
+    print(f"总样本数: {2*sample_size}")
     # --- 步骤 2: 特征工程 ---
     X = df_balanced.drop(columns=['Label'])
     keep_features = [
@@ -105,7 +106,7 @@ if __name__ == "__main__":
 
     # cv=3 兼顾速度与准确度
     rfecv = RFECV(estimator=xgb_selector,
-                  step=2,
+                  step=1,
                   cv=3,
                   scoring='f1',
                   n_jobs=-1)
@@ -139,9 +140,10 @@ if __name__ == "__main__":
                               eval_metric='logloss')
 
     param_grid_xgb = {
-        'n_estimators': [100, 300],
-        'learning_rate': [0.05, 0.1],
-        'max_depth': [6, 10],
+        'n_estimators': [100, 200, 300],
+        'learning_rate': [0.01, 0.05, 0.09],
+        'max_depth': [6, 10, 15],
+        'subsample': [0.8],
         'scale_pos_weight': [3, 5]
     }
 
@@ -174,3 +176,12 @@ if __name__ == "__main__":
 
     # 调用绘图
     plot_final_evaluation(cv_results, best_xgb, X_filtered[optimal_features])
+
+    # 保存最终训练好的模型
+    model_filename = 'final_xgboost_model.pkl'
+    joblib.dump(best_xgb, model_filename)
+    print(f"\n[成功] 最佳模型已保存至: {model_filename}")
+
+    # 同时建议保存最优特征列表（因为预测新数据时，特征顺序必须完全一致）
+    joblib.dump(optimal_features, 'optimal_features_list.pkl')
+    print("[成功] 最优特征清单已保存。")
