@@ -1,7 +1,16 @@
 #忽略资源文件夹
 src/
+
+uploads/
+
 resources/
+
+old/
+
+__pycache__/
 
 *.joblib
 
 *.parquet
+
+.gitignore
