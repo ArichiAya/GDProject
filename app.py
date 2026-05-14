@@ -1,8 +1,7 @@
 # 文件名：app.py
-# version 514
 import os
-import threading
 from flask import Flask, request, render_template, jsonify
+from werkzeug.utils import secure_filename
 import pandas as pd
 
 from transfer import run_extraction
@@ -10,6 +9,8 @@ from predict_live_traffic import predict_traffic
 from shark_manager import SlidingWindowSniffer
 
 app = Flask(__name__)
+
+UPLOAD_DIR = "uploads"
 
 system_status = {
     "latest_file": "等待初始化...",
@@ -20,51 +21,58 @@ system_status = {
 }
 
 
+def style_logic(row):
+    status = str(row['Status'])
+
+    if '[A]' in status or '[B]' in status:
+        return ['background-color: #dc3545; color: white; font-weight: bold;'
+                ] * len(row)
+
+    if '[C]' in status:
+        return [
+            'background-color: #6f42c1; color: white; font-weight: bold;'
+        ] * len(row)
+
+    if '[E]' in status:
+        return ['color: #856404; background-color: #fff3cd;'] * len(row)
+
+    if '[D]' in status:
+        return [
+            'background-color: #e7f3ff; color: #004085; font-style: italic;'
+        ] * len(row)
+
+    return [''] * len(row)
+
+
+def df_to_styled_html(summary_df):
+    return summary_df.style.apply(style_logic, axis=1).to_html(
+        classes='table table-hover table-bordered text-center align-middle',
+        index=False)
+
+
+def process_pcap(pcap_path):
+    """处理 pcap 文件：提取特征 -> 模型预测 -> 返回 HTML 表格"""
+    csv_path = pcap_path + ".csv"
+    flow_count = run_extraction(pcap_path, csv_path)
+    if flow_count == 0:
+        return None, 0, "未提取到任何流记录"
+
+    summary_df = predict_traffic(csv_path)
+    if summary_df.empty:
+        return None, 0, "分析失败：模型未产生结果"
+
+    html_table = df_to_styled_html(summary_df)
+    return html_table, flow_count, os.path.basename(pcap_path)
+
+
 def on_window_finished(pcap_path):
+    """实时监控窗口回调：处理抓包结果并更新全局状态"""
     try:
-        csv_path = pcap_path + ".csv"
-        flow_count = run_extraction(pcap_path, csv_path)
-
-        if flow_count > 0:
-            summary_df = predict_traffic(csv_path)
-
-            def style_logic(row):
-                status = str(row['Status'])
-
-                # 洪水/扫描 -> 红色
-                if '[A]' in status or '[B]' in status:
-                    return [
-                        'background-color: #dc3545; color: white; font-weight: bold;'
-                    ] * len(row)
-
-                # 病毒横向探测 -> 紫色 (区分不同类型的攻击)
-                if '[C]' in status:
-                    return [
-                        'background-color: #6f42c1; color: white; font-weight: bold;'
-                    ] * len(row)
-
-                # 可疑 -> 橙色
-                if '[E]' in status:
-                    return ['color: #856404; background-color: #fff3cd;'
-                            ] * len(row)
-
-                # 正常业务 -> 淡蓝色
-                if '[D]' in status:
-                    return [
-                        'background-color: #e7f3ff; color: #004085; font-style: italic;'
-                    ] * len(row)
-
-                return [''] * len(row)
-
-            # 生成 HTML (已修复原来的重复赋值bug)
-            html_table = summary_df.style.apply(style_logic, axis=1).to_html(
-                classes=
-                'table table-hover table-bordered text-center align-middle',
-                index=False)
-
+        html_table, flow_count, fname = process_pcap(pcap_path)
+        if html_table is not None:
             system_status["table_html"] = html_table
-            system_status["flow_count"] = flow_count
-            system_status["latest_file"] = os.path.basename(pcap_path)
+        system_status["flow_count"] = flow_count
+        system_status["latest_file"] = fname
     except Exception as e:
         print(f"Error in analysis pipeline: {e}")
 
@@ -101,6 +109,39 @@ def get_latest_data():
         "table_html": system_status["table_html"],
         "is_running": system_status["is_running"]
     })
+
+
+@app.route('/api/upload', methods=['POST'])
+def upload_pcap():
+    if 'file' not in request.files:
+        return jsonify({"status": "error", "message": "未选择文件"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"status": "error", "message": "文件名为空"}), 400
+
+    if not file.filename.lower().endswith(('.pcap', '.pcapng')):
+        return jsonify({"status": "error", "message": "仅支持 .pcap / .pcapng 格式"}), 400
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    filename = secure_filename(file.filename)
+    save_path = os.path.join(UPLOAD_DIR, filename)
+    file.save(save_path)
+
+    try:
+        html_table, flow_count, fname = process_pcap(save_path)
+        return jsonify({
+            "status": "success",
+            "filename": fname,
+            "flow_count": flow_count,
+            "table_html": html_table
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"分析失败: {str(e)}"
+        }), 500
 
 
 if __name__ == '__main__':

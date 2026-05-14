@@ -5,56 +5,157 @@
     <title>流量异常监控中心</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { background-color: #f4f6f9; padding-top: 40px; }
-        .container { max-width: 1200px; }
+        body { background-color: #f4f6f9; }
+        .sidebar {
+            position: fixed; top: 0; left: 0; bottom: 0;
+            width: 220px; background: #1e293b; color: #cbd5e1;
+            padding-top: 20px; z-index: 1000;
+        }
+        .sidebar .nav-link {
+            color: #94a3b8; padding: 12px 24px; border-left: 3px solid transparent;
+            transition: all 0.2s; font-size: 0.95rem;
+        }
+        .sidebar .nav-link:hover { color: #e2e8f0; background: rgba(255,255,255,0.05); }
+        .sidebar .nav-link.active {
+            color: #fff; background: rgba(59,130,246,0.2);
+            border-left-color: #3b82f6; font-weight: 600;
+        }
+        .sidebar .nav-icon { font-size: 1.1rem; margin-right: 8px; }
+        .sidebar-brand { padding: 0 24px 20px; border-bottom: 1px solid #334155; margin-bottom: 12px; }
+        .sidebar-brand h5 { color: #f1f5f9; font-weight: 700; margin: 0; font-size: 1.05rem; }
+
+        .main-content { margin-left: 220px; padding: 32px 40px; }
+
         .card { box-shadow: 0 4px 15px rgba(0,0,0,0.06); border-radius: 12px; border: none; }
         .table-container { margin-top: 20px; overflow-x: auto; max-height: 600px; border-radius: 8px; }
         th { background-color: #2c3e50 !important; color: white !important; position: sticky; top: 0; }
         .status-badge { font-size: 1.1rem; padding: 10px 20px; }
         .glow-text { transition: color 0.3s ease; }
+
+        .upload-zone {
+            border: 2px dashed #ced4da; border-radius: 10px;
+            transition: border-color 0.3s, background-color 0.3s;
+        }
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: #0d6efd; background-color: #e7f1ff;
+        }
+
+        .page-panel { display: none; }
+        .page-panel.active { display: block; }
     </style>
 </head>
 <body>
 
-<div class="container">
-    <div class="row align-items-center mb-4">
-        <div class="col-md-8">
-            <h1 class="fw-bold text-dark">网络行为智能分析与预警平台</h1>
-            <p class="text-muted mb-0">基于 决策树 的实时检测引擎</p>
+<!-- ====== 左侧导航栏 ====== -->
+<nav class="sidebar d-flex flex-column">
+    <div class="sidebar-brand">
+        <h5>网络行为智能分析<br>与预警平台</h5>
+        <small class="text-muted" style="font-size: 0.7rem;">XGBoost 检测引擎</small>
+    </div>
+    <a class="nav-link active" data-page="live" href="#">
+        <span class="nav-icon">&#128200;</span> 实时流量监控
+    </a>
+    <a class="nav-link" data-page="upload" href="#">
+        <span class="nav-icon">&#128230;</span> 文件上传分析
+    </a>
+</nav>
+
+<!-- ====== 主内容区 ====== -->
+<div class="main-content">
+
+    <!-- ==================== 页面1：实时流量监控 ==================== -->
+    <div id="page-live" class="page-panel active">
+
+        <div class="row align-items-center mb-4">
+            <div class="col-md-8">
+                <h2 class="fw-bold text-dark">实时流量监控</h2>
+                <p class="text-muted mb-0">滑动窗口抓包 + 模型实时判定</p>
+            </div>
+            <div class="col-md-4 text-end">
+                <button id="toggleBtn" class="btn btn-lg btn-success shadow-sm px-4">
+                    ▶ 启动实时监控
+                </button>
+            </div>
         </div>
-        <div class="col-md-4 text-end">
-            <button id="toggleBtn" class="btn btn-lg btn-success shadow-sm px-4">
-                ▶ 启动实时监控
-            </button>
+
+        <div class="card p-3 mb-4 bg-white">
+            <div class="row text-center align-items-center">
+                <div class="col-md-4 border-end">
+                    <span class="text-muted d-block small mb-1">引擎运行状态</span>
+                    <span id="engineStatus" class="badge bg-secondary status-badge">离线 休眠中</span>
+                </div>
+                <div class="col-md-4 border-end">
+                    <span class="text-muted d-block small mb-1">最新分析窗口 (PCAP)</span>
+                    <strong id="latestFile" class="text-primary d-block glow-text">暂无数据</strong>
+                </div>
+                <div class="col-md-4">
+                    <span class="text-muted d-block small mb-1">本窗口提取 TCP 流</span>
+                    <strong id="flowCount" class="text-success d-block fs-4 glow-text">0</strong>
+                </div>
+            </div>
         </div>
+
+        <div class="card p-4">
+            <h5 class="card-title fw-bold border-bottom pb-3 mb-0">网络实体行为定性审计</h5>
+            <div class="table-container" id="tableContainer">
+                <div class='text-center text-muted py-5'>引擎未启动</div>
+            </div>
+        </div>
+
     </div>
 
-    <div class="card p-3 mb-4 bg-white">
-        <div class="row text-center align-items-center">
-            <div class="col-md-4 border-end">
-                <span class="text-muted d-block small mb-1">引擎运行状态</span>
-                <span id="engineStatus" class="badge bg-secondary status-badge">离线 休眠中</span>
-            </div>
-            <div class="col-md-4 border-end">
-                <span class="text-muted d-block small mb-1">最新分析窗口 (PCAP)</span>
-                <strong id="latestFile" class="text-primary d-block glow-text">暂无数据</strong>
-            </div>
-            <div class="col-md-4">
-                <span class="text-muted d-block small mb-1">本窗口提取 TCP 流</span>
-                <strong id="flowCount" class="text-success d-block fs-4 glow-text">0</strong>
+    <!-- ==================== 页面2：文件上传分析 ==================== -->
+    <div id="page-upload" class="page-panel">
+
+        <div class="mb-4">
+            <h2 class="fw-bold text-dark">文件上传分析</h2>
+            <p class="text-muted mb-0">上传 pcap 文件，离线分析恶意流量</p>
+        </div>
+
+        <div class="card p-4 mb-4">
+            <h5 class="card-title fw-bold border-bottom pb-3 mb-3">选择 PCAP 文件</h5>
+            <div id="uploadZone" class="upload-zone p-4 text-center">
+                <div class="mb-2" style="font-size: 2.5rem;">&#128230;</div>
+                <p class="text-muted mb-2">拖拽 .pcap / .pcapng 文件到此处，或点击选择</p>
+                <input type="file" id="fileInput" accept=".pcap,.pcapng" hidden>
+                <button id="selectBtn" class="btn btn-outline-primary btn-sm">选择文件</button>
+                <span id="fileName" class="ms-2 text-secondary small"></span>
+                <div class="mt-2">
+                    <button id="uploadBtn" class="btn btn-primary btn-sm" disabled>开始分析</button>
+                </div>
+                <div id="uploadProgress" class="mt-2 d-none">
+                    <div class="spinner-border spinner-border-sm text-primary me-2" role="status"></div>
+                    <span class="text-muted small">正在分析，请稍候...</span>
+                </div>
+                <div id="uploadMsg" class="mt-2"></div>
             </div>
         </div>
+
+        <div class="card p-4">
+            <h5 class="card-title fw-bold border-bottom pb-3 mb-0">分析结果</h5>
+            <div class="table-container" id="uploadTableContainer">
+                <div class="text-center text-muted py-5">请上传文件开始分析</div>
+            </div>
+        </div>
+
     </div>
 
-    <div class="card p-4">
-        <h5 class="card-title fw-bold border-bottom pb-3 mb-0">网络实体行为定性审计</h5>
-        <div class="table-container" id="tableContainer">
-            <div class='text-center text-muted py-5'>引擎未启动</div>
-        </div>
-    </div>
 </div>
 
 <script>
+    // ====== 导航栏切换 ======
+    document.querySelectorAll('.sidebar .nav-link').forEach(link => {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            document.querySelectorAll('.sidebar .nav-link').forEach(l => l.classList.remove('active'));
+            this.classList.add('active');
+            const target = this.dataset.page;
+            document.querySelectorAll('.page-panel').forEach(p => p.classList.remove('active'));
+            document.getElementById('page-' + target).classList.add('active');
+        });
+    });
+
+    // ====== 实时监控 ======
     let isRunning = false;
     const toggleBtn = document.getElementById('toggleBtn');
     const engineStatus = document.getElementById('engineStatus');
@@ -64,8 +165,8 @@
 
     toggleBtn.addEventListener('click', function() {
         const action = isRunning ? 'stop' : 'start';
-        toggleBtn.disabled = true; 
-        
+        toggleBtn.disabled = true;
+
         fetch('/api/toggle', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -98,8 +199,7 @@
             .then(response => response.json())
             .then(data => {
                 if (data.is_running !== isRunning) updateUIState(data.is_running);
-                
-                // 窗口更新时的文字闪烁提示效果
+
                 if (latestFile.innerText !== data.latest_file && data.latest_file !== "等待初始化...") {
                     flowCount.classList.remove('text-success');
                     flowCount.classList.add('text-danger');
@@ -113,7 +213,79 @@
                 flowCount.innerText = data.flow_count;
                 tableContainer.innerHTML = data.table_html;
             });
-    }, 3000); 
+    }, 3000);
+
+    // ====== 文件上传分析 ======
+    const uploadZone = document.getElementById('uploadZone');
+    const fileInput = document.getElementById('fileInput');
+    const selectBtn = document.getElementById('selectBtn');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const fileNameEl = document.getElementById('fileName');
+    const uploadProgress = document.getElementById('uploadProgress');
+    const uploadMsg = document.getElementById('uploadMsg');
+    const uploadTableContainer = document.getElementById('uploadTableContainer');
+
+    selectBtn.addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length > 0) {
+            fileNameEl.textContent = fileInput.files[0].name;
+            uploadBtn.disabled = false;
+        }
+    });
+
+    uploadZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        uploadZone.classList.add('dragover');
+    });
+    uploadZone.addEventListener('dragleave', () => {
+        uploadZone.classList.remove('dragover');
+    });
+    uploadZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        uploadZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length > 0) {
+            fileInput.files = e.dataTransfer.files;
+            fileNameEl.textContent = e.dataTransfer.files[0].name;
+            uploadBtn.disabled = false;
+        }
+    });
+
+    uploadBtn.addEventListener('click', () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+
+        uploadBtn.disabled = true;
+        uploadProgress.classList.remove('d-none');
+        uploadMsg.innerHTML = '';
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        fetch('/api/upload', { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(data => {
+                uploadProgress.classList.add('d-none');
+                uploadBtn.disabled = false;
+
+                if (data.status === 'success') {
+                    uploadMsg.innerHTML =
+                        `<span class="text-success small">
+                          分析完成 | 文件: ${data.filename} | 流数: ${data.flow_count}
+                        </span>`;
+                    uploadTableContainer.innerHTML = data.table_html;
+                } else {
+                    uploadMsg.innerHTML =
+                        `<span class="text-danger small">${data.message}</span>`;
+                }
+            })
+            .catch(() => {
+                uploadProgress.classList.add('d-none');
+                uploadBtn.disabled = false;
+                uploadMsg.innerHTML =
+                    '<span class="text-danger small">上传失败，请重试</span>';
+            });
+    });
 </script>
 </body>
 </html>
