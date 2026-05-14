@@ -1,28 +1,37 @@
 import os
+import pandas as pd
 from nfstream import NFStreamer
 
 
 def run_extraction(pcap_path, output_csv):
     """
-    接收前端传入的 pcap 路径，并将提取的特征保存为指定的 csv 路径
+    使用 NFStream 提取特征，加入抗 Flood 强杀机制
     """
-    print(f"正在处理上传的文件: {pcap_path}")
-
     if not os.path.exists(pcap_path):
-        raise FileNotFoundError("错误：找不到 pcap 文件！")
+        return 0
 
-    # 初始化提取器
-    streamer = NFStreamer(source=pcap_path, statistical_analysis=True)
+    # 保护机制：防止处理超大文件导致内存溢出
+    file_size_mb = os.path.getsize(pcap_path) / (1024 * 1024)
+    if file_size_mb > 100:
+        print(f"[!] 文件过大 ({file_size_mb:.2f}MB)，已跳过以保护系统。")
+        return 0
 
-    # 转换为 Pandas DataFrame
-    df = streamer.to_pandas()
+    try:
+        # idle_timeout=10: 针对无响应的洪水包，10秒没动作直接结算
+        # active_timeout=15: 强制流的最长生存周期，保证实时性
+        streamer = NFStreamer(source=pcap_path,
+                              statistical_analysis=True,
+                              idle_timeout=10,
+                              active_timeout=15)
 
-    # 保存结果
-    df.to_csv(output_csv, index=False)
-    print(f"特征提取成功！共发现 {len(df)} 条流，已保存至 {output_csv}。")
-    return len(df)
+        df = streamer.to_pandas()
+        if df is None or df.empty:
+            return 0
 
+        df.to_csv(output_csv, index=False)
+        print(f"[+] 提取完成: {len(df)} 条原始流特征。")
+        return len(df)
 
-if __name__ == "__main__":
-    # 本地测试用的默认路径
-    run_extraction(r"D:\GraduationProject\src\evil2.pcap", "evil2.csv")
+    except Exception as e:
+        print(f"[!] 提取失败: {e}")
+        return 0

@@ -1,64 +1,106 @@
+# 文件名：app.py
 import os
-from flask import Flask, request, render_template
-from werkzeug.utils import secure_filename
+import threading
+from flask import Flask, request, render_template, jsonify
 import pandas as pd
 
-# 导入你修改好的两个脚本的函数
 from transfer import run_extraction
 from predict_live_traffic import predict_traffic
+from shark_manager import SlidingWindowSniffer
 
 app = Flask(__name__)
 
-# 设置上传目录
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+system_status = {
+    "latest_file": "等待初始化...",
+    "flow_count": 0,
+    "table_html":
+    "<div class='text-center text-muted py-5'>等待监控窗口完成抓取... (约需 15-30 秒)</div>",
+    "is_running": False
+}
 
 
-@app.route('/', methods=['GET', 'POST'])
+def on_window_finished(pcap_path):
+    try:
+        csv_path = pcap_path + ".csv"
+        flow_count = run_extraction(pcap_path, csv_path)
+
+        if flow_count > 0:
+            summary_df = predict_traffic(csv_path)
+
+            def style_logic(row):
+                status = str(row['Status'])
+
+                # 洪水/扫描 -> 红色
+                if '[A]' in status or '[B]' in status:
+                    return [
+                        'background-color: #dc3545; color: white; font-weight: bold;'
+                    ] * len(row)
+
+                # 病毒横向探测 -> 紫色 (区分不同类型的攻击)
+                if '[C]' in status:
+                    return [
+                        'background-color: #6f42c1; color: white; font-weight: bold;'
+                    ] * len(row)
+
+                # 可疑 -> 橙色
+                if '[E]' in status:
+                    return ['color: #856404; background-color: #fff3cd;'
+                            ] * len(row)
+
+                # 正常业务 -> 淡蓝色
+                if '[D]' in status:
+                    return [
+                        'background-color: #e7f3ff; color: #004085; font-style: italic;'
+                    ] * len(row)
+
+                return [''] * len(row)
+
+            # 生成 HTML (已修复原来的重复赋值bug)
+            html_table = summary_df.style.apply(style_logic, axis=1).to_html(
+                classes=
+                'table table-hover table-bordered text-center align-middle',
+                index=False)
+
+            system_status["table_html"] = html_table
+            system_status["flow_count"] = flow_count
+            system_status["latest_file"] = os.path.basename(pcap_path)
+    except Exception as e:
+        print(f"Error in analysis pipeline: {e}")
+
+
+sniffer = SlidingWindowSniffer(callback=on_window_finished)
+
+
+@app.route('/')
 def index():
-    if request.method == 'POST':
-        # 1. 获取上传的文件
-        if 'pcap_file' not in request.files:
-            return "未找到文件部分"
-        file = request.files['pcap_file']
+    return render_template('index.html')
 
-        if file.filename == '':
-            return "未选择文件"
 
-        if file:
-            filename = secure_filename(file.filename)
-            pcap_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            csv_path = pcap_path + ".csv"
+@app.route('/api/toggle', methods=['POST'])
+def toggle_sniffer():
+    action = request.json.get('action')
+    if action == 'start':
+        sniffer.start()
+        system_status["is_running"] = True
+    elif action == 'stop':
+        sniffer.stop()
+        system_status["is_running"] = False
 
-            # 保存上传的 Pcap
-            file.save(pcap_path)
+    return jsonify({
+        "status": "success",
+        "is_running": system_status["is_running"]
+    })
 
-            try:
-                # 2. 调用 transfer.py 提取特征
-                flow_count = run_extraction(pcap_path, csv_path)
 
-                # 3. 调用 predict_live_traffic.py 进行预测
-                result_df = predict_traffic(csv_path)
-
-                # 4. 将 DataFrame 转换为 HTML 表格用于网页展示
-                # 将恶意流量行加上高亮 class
-                table_html = result_df.to_html(
-                    classes='table table-striped table-hover',
-                    index=False,
-                    justify='center')
-
-                return render_template('index.html',
-                                       table=table_html,
-                                       filename=filename,
-                                       flow_count=flow_count)
-            except Exception as e:
-                return f"处理过程中发生错误: {str(e)}"
-
-    # GET 请求：直接显示主页
-    return render_template('index.html', table=None)
+@app.route('/api/latest_data', methods=['GET'])
+def get_latest_data():
+    return jsonify({
+        "latest_file": system_status["latest_file"],
+        "flow_count": system_status["flow_count"],
+        "table_html": system_status["table_html"],
+        "is_running": system_status["is_running"]
+    })
 
 
 if __name__ == '__main__':
-    # 启动 Web 服务器
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)
