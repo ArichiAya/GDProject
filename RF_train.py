@@ -8,6 +8,7 @@ from sklearn.metrics import classification_report
 import matplotlib.pyplot as plt
 import seaborn as sns
 import multiprocessing
+import joblib
 
 
 # ==========================================
@@ -192,3 +193,9 @@ if __name__ == "__main__":
 
     # 8. 调用绘图展示
     plot_results(cv_results, best_rf, X_filtered[optimal_features])
+
+    # 9. 保存模型
+    joblib.dump(best_rf, 'rf_model.pkl')
+    # 同时保存最优特征列表，预测时需要用到
+    joblib.dump(optimal_features, 'optimal_features.pkl')
+    print("模型已保存至 rf_model.pkl，特征列表已保存至 optimal_features.pkl")
